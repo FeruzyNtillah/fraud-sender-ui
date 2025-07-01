@@ -274,7 +274,7 @@ const SenderInterface = () => {
               </button>
             )}
             <h1 style={styles.title}>
-              {currentStep === 1 ? 'Account Setup' : 'Send Money'}
+              {currentStep === 1 ? 'Zpesa Account' : 'Send Money'}
             </h1>
           </div>
           
@@ -282,7 +282,7 @@ const SenderInterface = () => {
 
           {transactionSuccess && (
             <div style={{...styles.alert, ...styles.successAlert}}>
-              Transaction submitted successfully!
+              Transaction sent successfully!
             </div>
           )}
 
