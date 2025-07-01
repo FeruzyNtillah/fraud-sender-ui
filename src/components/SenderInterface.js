@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { supabase } from '../supabaseClient';
 // eslint-disable-next-line no-unused-vars
 import { Box, Typography, Button, TextField, Card, CardContent } from '@mui/material';
 
@@ -12,6 +11,8 @@ const SenderInterface = () => {
   const [isHighRisk, setIsHighRisk] = useState(false);
   const [transactionSuccess, setTransactionSuccess] = useState(false);
   const [error, setError] = useState('');
+  const [transactionResult, setTransactionResult] = useState(null);
+  const [transactionsArray, setTransactionsArray] = useState([]);
 
   const checkRisk = (value) => {
     const numAmount = parseFloat(value) || 0;
@@ -25,38 +26,149 @@ const SenderInterface = () => {
   };
 
   const checkFraud = async (transactionData) => {
-    const xmlData = `
-      <transaction>
-        <initiatorid>${transactionData.initiatorid}</initiatorid>
-        <recipient>${transactionData.recipient}</recipient>
-        <amount>${transactionData.amount}</amount>
-        <oldbalanceinitiator>${transactionData.oldbalinitiator}</oldbalanceinitiator>
-        <timestamp>${transactionData.timestamp}</timestamp>
-      </transaction>
-    `;
+    // Validate transaction data before processing
+    if (!transactionData.initiator || !transactionData.recipient || isNaN(transactionData.amount)) {
+      console.error('Invalid transaction data:', transactionData);
+      setError('Invalid transaction data');
+      return 0;
+    }
+
+    // Ensure all values are properly formatted
+    const cleanTransactionData = {
+      ...transactionData,
+      initiator: String(transactionData.initiator).trim(),
+      recipient: String(transactionData.recipient).trim(),
+      amount: Number(transactionData.amount),
+      oldbalinitiator: Number(transactionData.oldbalinitiator),
+      newbalinitiator: Number(transactionData.newbalinitiator),
+      oldbalrecipient: Number(transactionData.oldbalrecipient),
+      newbalrecipient: Number(transactionData.newbalrecipient)
+    };
+
+    console.log('Clean transaction data:', cleanTransactionData);
+
+    // Fixed XML structure to match the expected format
+    const xmlData = `<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
+    <CstmrCdtTrfInitn>
+        <PmtInf>
+            <Dbtr>
+                <Id>
+                    <PrvtId>
+                        <Othr>
+                            <Id>${cleanTransactionData.initiator}</Id>
+                            <OldBal>${cleanTransactionData.oldbalinitiator.toFixed(2)}</OldBal>
+                            <NewBal>${cleanTransactionData.newbalinitiator.toFixed(2)}</NewBal>
+                        </Othr>
+                    </PrvtId>
+                </Id>
+            </Dbtr>
+            <CdtTrfTxInf>
+                <Cdtr>
+                    <Id>
+                        <PrvtId>
+                            <Othr>
+                                <Id>${cleanTransactionData.recipient}</Id>
+                                <OldBal>${cleanTransactionData.oldbalrecipient.toFixed(2)}</OldBal>
+                                <NewBal>${cleanTransactionData.newbalrecipient.toFixed(2)}</NewBal>
+                            </Othr>
+                        </PrvtId>
+                    </Id>
+                </Cdtr>
+                <Amt>
+                    <InstdAmt Ccy="TZS">${cleanTransactionData.amount.toFixed(2)}</InstdAmt>
+                </Amt>
+            </CdtTrfTxInf>
+        </PmtInf>
+    </CstmrCdtTrfInitn>
+</Document>`;
+
+    console.log('XML Payload:', xmlData);
 
     try {
-      const response = await fetch('https://your-modelbit-endpoint.api.modelbit.com/v1/your_model_name', {
+      const response = await fetch('https://fds-it.us-east-1.aws.modelbit.com/v1/predict_from_iso20022/latest', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/xml',
-          'Authorization': 'Bearer your_modelbit_api_key', // Hardcoded, replace with actual key
+          'Content-Type': 'application/json',
         },
-        body: xmlData,
+        body: JSON.stringify({ data: xmlData }),
       });
-      const result = await response.text(); // Assuming XML response
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(result, 'application/xml');
-      const fraudProbability = parseFloat(xmlDoc.getElementsByTagName('fraud_probability')[0]?.textContent) || 0;
-      return fraudProbability; // Return raw probability for status determination
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API error:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorText,
+        });
+        setError(`API error: ${response.status} - ${errorText}`);
+        return 0;
+      }
+
+      const result = await response.json();
+      console.log('Raw API Response:', result);
+
+      let fraudProbability = 0;
+      
+      // Enhanced error handling for API response
+      if (result.data && result.data.error) {
+        console.error('API returned error:', result.data.error);
+        setError(`API Error: ${result.data.error}`);
+        return 0;
+      }
+      
+      // Handle different response formats
+      if (typeof result === 'number') {
+        fraudProbability = result;
+      } 
+      else if (result.data && typeof result.data === 'number') {
+        fraudProbability = result.data;
+      }
+      else if (result.fraud_probability !== undefined) {
+        fraudProbability = parseFloat(result.fraud_probability) || 0;
+      }
+      else if (result.data && typeof result.data === 'object') {
+        if (result.data.fraud_probability !== undefined) {
+          fraudProbability = parseFloat(result.data.fraud_probability) || 0;
+        } else if (result.data.result !== undefined) {
+          fraudProbability = parseFloat(result.data.result) || 0;
+        }
+      }
+      else if (typeof result.data === 'string') {
+        try {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(result.data, 'application/xml');
+          const parserError = xmlDoc.querySelector('parsererror');
+          if (parserError) {
+            console.error('XML parsing error:', parserError.textContent);
+            setError('Failed to parse API response');
+            return 0;
+          }
+          const fraudProbabilityNode = xmlDoc.getElementsByTagName('fraud_probability')[0];
+          fraudProbability = parseFloat(fraudProbabilityNode?.textContent) || 0;
+        } catch (e) {
+          console.error('Error parsing XML response:', e);
+          setError('Failed to parse API response');
+          return 0;
+        }
+      }
+
+      console.log('Final fraud probability:', fraudProbability);
+      return fraudProbability;
     } catch (error) {
       console.error('Fraud detection failed:', error);
-      return 0; // Default to 0 if API call fails
+      setError('Fraud detection service unavailable');
+      return 0;
     }
   };
 
   const handleStepOneSubmit = (e) => {
     e.preventDefault();
+    if (!initiatorId.trim() || !balance) {
+      setError('Initiator ID and balance are required');
+      return;
+    }
+    setError('');
     setCurrentStep(2);
   };
 
@@ -67,16 +179,23 @@ const SenderInterface = () => {
       setError(errorMsg);
       return;
     }
+    if (!initiatorId.trim() || !phone.trim()) {
+      setError('Initiator ID and recipient phone number are required');
+      return;
+    }
+    console.log('Transaction Submit Inputs:', {
+      initiatorId,
+      phone,
+      amount,
+      balance,
+    });
     setError('');
 
-    const { data: { user } } = await supabase.auth.getUser();
-    const transactionId = crypto.randomUUID(); // Generate UUID for transactionid
-
+    const transactionId = crypto.randomUUID();
     const transactionData = {
       transactionid: transactionId,
-      initiatorid: user?.id || initiatorId, // Use authenticated user ID or manual input
-      initiator: initiatorId, // Keep as separate field per schema
-      recipient: phone,
+      initiator: initiatorId.trim(),
+      recipient: phone.trim(),
       amount: parseFloat(amount),
       transactiontype: 'transfer',
       oldbalinitiator: parseFloat(balance),
@@ -89,44 +208,34 @@ const SenderInterface = () => {
       transaction_time: new Date().toISOString(),
     };
 
+    console.log('Transaction Data:', transactionData);
+
     const fraudProbability = await checkFraud(transactionData);
     if (fraudProbability > 0.8) {
       transactionData.fraud_probability = fraudProbability;
       transactionData.status = 'blocked';
-      await handleReview(transactionId, user?.id, 'blocked', 'Transaction blocked due to high fraud probability');
+      transactionData.notes = 'Transaction blocked due to high fraud probability';
     } else if (fraudProbability > 0.5) {
       transactionData.fraud_probability = fraudProbability;
       transactionData.status = 'flagged';
-      await handleReview(transactionId, user?.id, 'flagged', 'Potential fraud detected by Modelbit');
+      transactionData.notes = 'Potential fraud detected by Modelbit';
     } else {
       transactionData.fraud_probability = fraudProbability;
       transactionData.status = 'legit';
     }
 
-    const { error } = await supabase.from('transactions').insert([transactionData]);
-    if (error) {
-      console.error('Error inserting transaction:', error.message);
-      setError('Failed to send transaction');
-    } else {
-      setTransactionSuccess(true);
-      setPhone('');
-      setAmount('');
-      setIsHighRisk(false);
-      setTimeout(() => setTransactionSuccess(false), 5000);
-    }
-  };
-
-  const handleReview = async (transactionId, reviewedByUserId, newStatus, notes) => {
-    const { error } = await supabase.from('transaction_reviews').insert({
-      id: Math.floor(Math.random() * 1000000), // Temporary int8 ID, replace with auto-increment or sequence
-      transaction_id: transactionId,
-      reviewed_by_user_id: reviewedByUserId,
-      reviewed_at: new Date().toISOString(),
-      previous_status: 'pending',
-      new_status: newStatus,
-      notes,
-    });
-    if (error) console.error('Review failed:', error.message);
+    setTransactionResult(transactionData);
+    
+    // Add transaction to array and save to localStorage
+    const updatedTransactions = [...transactionsArray, transactionData];
+    setTransactionsArray(updatedTransactions);
+    localStorage.setItem('transactions', JSON.stringify(updatedTransactions));
+    
+    setTransactionSuccess(true);
+    setPhone('');
+    setAmount('');
+    setIsHighRisk(false);
+    setTimeout(() => setTransactionSuccess(false), 5000);
   };
 
   const goBackToStepOne = () => {
@@ -145,9 +254,11 @@ const SenderInterface = () => {
     setIsHighRisk(false);
     setTransactionSuccess(false);
     setCurrentStep(1);
+    setTransactionResult(null);
+    setTransactionsArray([]);
   };
 
-  const isStepTwoFormValid = phone && amount && parseFloat(amount) <= parseFloat(balance);
+  const isStepTwoFormValid = phone.trim() && amount && parseFloat(amount) <= parseFloat(balance);
 
   const styles = {
     container: { minHeight: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f5f5', padding: '24px' },
@@ -232,11 +343,11 @@ const SenderInterface = () => {
                 <h3 style={styles.cardTitle}>Account Summary</h3>
                 <div style={styles.summaryRow}>
                   <span>Balance:</span>
-                  <span>{balance ? `${parseFloat(balance).toLocaleString()} TZS` : "0 TZS"}</span>
+                  <span>{balance ? `${parseFloat(balance).toLocaleString()} TZS` : '0 TZS'}</span>
                 </div>
                 <div style={styles.summaryRow}>
                   <span>Initiator ID:</span>
-                  <span>{initiatorId || "Not specified"}</span>
+                  <span>{initiatorId || 'Not specified'}</span>
                 </div>
               </div>
               <div style={styles.buttonGroup}>
@@ -244,9 +355,9 @@ const SenderInterface = () => {
                   Clear
                 </button>
                 <button
-                  style={{ ...styles.button, ...(balance && initiatorId ? styles.primaryButton : styles.disabledButton) }}
+                  style={{ ...styles.button, ...(balance && initiatorId.trim() ? styles.primaryButton : styles.disabledButton) }}
                   onClick={handleStepOneSubmit}
-                  disabled={!balance || !initiatorId}
+                  disabled={!balance || !initiatorId.trim()}
                 >
                   Continue
                 </button>
@@ -296,11 +407,11 @@ const SenderInterface = () => {
                 <h3 style={styles.cardTitle}>Transaction Summary</h3>
                 <div style={styles.summaryRow}>
                   <span>Recipient:</span>
-                  <span>{phone || "Not specified"}</span>
+                  <span>{phone || 'Not specified'}</span>
                 </div>
                 <div style={styles.summaryRow}>
                   <span>Amount:</span>
-                  <span>{amount ? `${parseFloat(amount).toLocaleString()} TZS` : "0 TZS"}</span>
+                  <span>{amount ? `${parseFloat(amount).toLocaleString()} TZS` : '0 TZS'}</span>
                 </div>
                 <div style={styles.summaryRow}>
                   <span>Fee:</span>
@@ -309,9 +420,28 @@ const SenderInterface = () => {
                 <div style={styles.divider} />
                 <div style={styles.summaryRow}>
                   <strong>Total:</strong>
-                  <strong>{amount ? `${(parseFloat(amount) + 1000).toLocaleString()} TZS` : "0 TZS"}</strong>
+                  <strong>{amount ? `${(parseFloat(amount) + 1000).toLocaleString()} TZS` : '0 TZS'}</strong>
                 </div>
               </div>
+              {transactionResult && (
+                <div style={styles.card}>
+                  <h3 style={styles.cardTitle}>Transaction Result</h3>
+                  <div style={styles.summaryRow}>
+                    <span>Status:</span>
+                    <span>{transactionResult.status}</span>
+                  </div>
+                  <div style={styles.summaryRow}>
+                    <span>Fraud Probability:</span>
+                    <span>{(transactionResult.fraud_probability * 100).toFixed(2)}%</span>
+                  </div>
+                  {transactionResult.notes && (
+                    <div style={styles.summaryRow}>
+                      <span>Notes:</span>
+                      <span>{transactionResult.notes}</span>
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={styles.buttonGroup}>
                 <button style={{ ...styles.button, ...styles.outlinedButton }} onClick={goBackToStepOne}>
                   Cancel
@@ -324,7 +454,7 @@ const SenderInterface = () => {
                   onClick={handleTransactionSubmit}
                   disabled={!isStepTwoFormValid}
                 >
-                  {isHighRisk ? "Confirm" : "Send"}
+                  {isHighRisk ? 'Confirm' : 'Send'}
                 </button>
               </div>
             </div>
