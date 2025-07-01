@@ -1,31 +1,34 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Box,
-  Typography,
-  Divider,
-  Card,
-  List,
-  ListItem,
-  ListItemText,
-  Avatar,
-  Chip,
-} from '@mui/material';
+import { supabase } from '../supabaseClient';
+import { Box, Typography, Divider, Card, List, ListItem, ListItemText, Avatar, Chip } from '@mui/material';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 
 const RecipientInterface = () => {
   const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  // Simulate receiving transactions (in a real app, this would come from an API or socket)
   useEffect(() => {
-    const handleMessage = (event) => {
-      if (event.data.type === 'NEW_TRANSACTION') {
-        setTransactions(prev => [event.data.payload, ...prev]);
-      }
+    const fetchTransactions = async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('recipient', 'any_recipient_string'); // Replace with dynamic recipient string
+      if (!error) setTransactions(data || []);
+      setLoading(false);
     };
 
-    // This is just for demo purposes - in a real app you'd use proper messaging
-    window.addEventListener('storage', handleMessage);
-    return () => window.removeEventListener('storage', handleMessage);
+    fetchTransactions();
+
+    const channel = supabase
+      .channel('transactions')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, (payload) => {
+        setTransactions((prev) => [payload.new, ...prev]); // Show all transactions
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return (
@@ -39,7 +42,6 @@ const RecipientInterface = () => {
         p: 3,
       }}
     >
-      {/* iPhone 13-like Container (same as sender) */}
       <Box
         sx={{
           width: 375,
@@ -54,7 +56,6 @@ const RecipientInterface = () => {
           bgcolor: 'background.paper',
         }}
       >
-        {/* Notch */}
         <Box
           sx={{
             position: 'absolute',
@@ -72,17 +73,8 @@ const RecipientInterface = () => {
             alignItems: 'center',
           }}
         >
-          <Box
-            sx={{
-              width: '60%',
-              height: '6px',
-              bgcolor: '#333',
-              borderRadius: '3px',
-            }}
-          />
+          <Box sx={{ width: '60%', height: '6px', bgcolor: '#333', borderRadius: '3px' }} />
         </Box>
-
-        {/* Screen Content */}
         <Box
           sx={{
             height: '100%',
@@ -98,25 +90,28 @@ const RecipientInterface = () => {
             Incoming Transactions
           </Typography>
           <Divider sx={{ my: 3 }} />
-
-          {transactions.length === 0 ? (
+          {loading ? (
+            <Typography variant="body1" align="center" sx={{ mt: 4 }}>
+              Loading...
+            </Typography>
+          ) : transactions.length === 0 ? (
             <Typography variant="body1" align="center" sx={{ mt: 4 }}>
               No transactions received yet
             </Typography>
           ) : (
             <List sx={{ width: '100%' }}>
-              {transactions.map((transaction, index) => (
-                <Card key={index} variant="outlined" sx={{ mb: 2 }}>
+              {transactions.map((transaction) => (
+                <Card key={transaction.transactionid} variant="outlined" sx={{ mb: 2 }}>
                   <ListItem>
                     <Avatar sx={{ bgcolor: 'primary.main', mr: 2 }}>
                       <AccountCircleIcon />
                     </Avatar>
                     <ListItemText
-                      primary={`$${transaction.amount.toFixed(2)}`}
-                      secondary={`From: ${transaction.phone}`}
+                      primary={`$${transaction.amount.toFixed(2)} (${transaction.status})`}
+                      secondary={`From: ${transaction.initiator}`}
                     />
                     <Chip
-                      label={new Date(transaction.timestamp).toLocaleTimeString()}
+                      label={new Date(transaction.transaction_time).toLocaleTimeString()}
                       size="small"
                     />
                   </ListItem>
@@ -125,8 +120,6 @@ const RecipientInterface = () => {
             </List>
           )}
         </Box>
-
-        {/* Home Indicator */}
         <Box
           sx={{
             position: 'absolute',
