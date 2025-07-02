@@ -73,7 +73,7 @@ const SenderInterface = () => {
 </Document>`;
 
     try {
-      const response = await fetch('https://fds-it.us-east-1.aws.modelbit.com/v1/predict_from_iso20022/latest', {
+      const response = await fetch('https://fds-it.us-east-1.aws.modelbit.com/v1/predict_from_iso20022_1/latest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: xmlData }),
